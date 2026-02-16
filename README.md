@@ -5,4 +5,6 @@
 3. Select region. In this example we will be using `us-east-2`
 4. Run `aws configure`. To get the keys go to your AWS console -> click on the account (top right corner) -> Security credentials -> Access Keys -> create a key. Copy-paste key ID and secret in the terminal. Note: this will create root key that can access anything!
 5. Run `cdk bootstrap`. You can read more about CDK bootstrap [here](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping.html)
-6. 
+6. Create secrets for PG database: `aws secretsmanager create-secret --name goldsky-pg-url --secret-string "test"` (replace "test" with actual PG DB url) 
+7. Run `cdk deploy` to deploy and redeploy. (On subsequent runs you can skip previous steps, just make sure correct AWS profile is being used 
+(should be named `default`: check `aws configure list` output, as well as `AWS_DEFAULT_PROFILE` and `AWS_PROFILE` env variables) 

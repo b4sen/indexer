@@ -1,9 +1,10 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import { FunctionUrlAuthType } from 'aws-cdk-lib/aws-lambda';
 import * as lambda from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 export class GoldskyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -13,12 +14,28 @@ export class GoldskyStack extends cdk.Stack {
       entry: 'lib/first-lambda.ts', // path to your code
       handler: 'handler',
     });
+
+    const periodicLambda = new lambda.NodejsFunction(this, 'periodic-lambda', {
+      entry: 'lib/periodic-lambda.ts',
+      handler: 'handler'
+    })
     //const url = handler.addFunctionUrl({
     //  authType: FunctionUrlAuthType.NONE
     // });
     //new cdk.CfnOutput(this, 'url', {
     //  value: url.url
     //});
+
+    const rule = new events.Rule(this, 'ScheduleRule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+    });
+
+    rule.addTarget(new targets.LambdaFunction(periodicLambda));
+
+    const dbSecret = secretsmanager.Secret.fromSecretNameV2(this, 'dbSecret', 'goldsky-pg-url');
+
+    // Grant your Lambda access
+    dbSecret.grantRead(periodicLambda);
 
     const goldsky_api = new apigateway.RestApi(this, 'api', {
       defaultCorsPreflightOptions: {
