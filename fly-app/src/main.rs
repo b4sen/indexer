@@ -9,13 +9,51 @@ struct QueryParams {
     cursor: Option<String>,
 }
 
+/// Table "publishes_5"
+///       Column      |            Type             | Collation | Nullable | Default
+/// ------------------+-----------------------------+-----------+----------+---------
+///  id               | text                        |           | not null |
+///  transaction_hash | text                        |           | not null |
+///  ledger_sequence  | bigint                      |           | not null |
+///  created_at       | timestamp without time zone |           | not null |
+///  author           | text                        |           |          |
+///  version          | text                        |           |          |
+///  wasm_name        | text                        |           |          |
+///  wasm_hash        | text                        |           |          |
+///
 #[derive(sqlx::FromRow)]
-struct PublishRow {
+struct WasmRow {
     id: String,
     author: String,
     version: String,
     wasm_name: String,
     wasm_hash: String,
+    version: String,
+    transaction_hash: String,
+}
+
+/// Table "deploys_5"
+///       Column      |            Type             | Collation | Nullable | Default
+/// ------------------+-----------------------------+-----------+----------+---------
+///  id               | text                        |           | not null |
+///  transaction_hash | text                        |           | not null |
+///  ledger_sequence  | bigint                      |           | not null |
+///  created_at       | timestamp without time zone |           | not null |
+///  contract_id      | text                        |           |          |
+///  contract_name    | text                        |           |          |
+///  deployer         | text                        |           |          |
+///  version          | text                        |           |          |
+///  wasm_name        | text                        |           |          |
+///
+#[derive(sqlx::FromRow)]
+struct ContractRow {
+    id: String,
+    transaction_hash: String,
+    contract_id: String,
+    contract_name: String,
+    deployer: String,
+    version: String,
+    wasm_name: String,
 }
 
 #[derive(Serialize)]
@@ -37,10 +75,7 @@ struct ErrorResponse {
     error: String,
 }
 
-async fn get_contracts(
-    pool: web::Data<PgPool>,
-    query: web::Query<QueryParams>,
-) -> HttpResponse {
+async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> HttpResponse {
     let limit = query.limit.unwrap_or(200);
     if limit < 2 || limit > 200 {
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -53,7 +88,7 @@ async fn get_contracts(
         Err(resp) => return resp,
     };
 
-    let rows = sqlx::query_as::<_, PublishRow>(
+    let rows = sqlx::query_as::<_, WasmRow>(
         "SELECT id, author, version, wasm_name, wasm_hash FROM \
            (SELECT *, ROW_NUMBER() OVER \
              (PARTITION BY wasm_name ORDER BY ledger_sequence, version DESC) AS rn \
@@ -152,7 +187,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
-            .route("/", web::get().to(get_contracts))
+            .route("/", web::get().to(get_wasms))
             .route("/health", web::get().to(health))
     })
     .bind(("0.0.0.0", port))?
