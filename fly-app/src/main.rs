@@ -24,12 +24,13 @@ struct QueryParams {
 #[derive(sqlx::FromRow)]
 struct WasmRow {
     id: String,
-    author: String,
-    version: String,
-    wasm_name: String,
-    wasm_hash: String,
-    version: String,
     transaction_hash: String,
+    ledger_sequence: i64,
+    created_at: chrono::NaiveDateTime,
+    author: Option<String>,
+    version: Option<String>,
+    wasm_name: Option<String>,
+    wasm_hash: Option<String>,
 }
 
 /// Table "deploys_5"
@@ -49,19 +50,21 @@ struct WasmRow {
 struct ContractRow {
     id: String,
     transaction_hash: String,
-    contract_id: String,
-    contract_name: String,
-    deployer: String,
-    version: String,
-    wasm_name: String,
+    ledger_sequence: i64,
+    created_at: chrono::NaiveDateTime,
+    contract_id: Option<String>,
+    contract_name: Option<String>,
+    deployer: Option<String>,
+    version: Option<String>,
+    wasm_name: Option<String>,
 }
 
 #[derive(Serialize)]
 struct PublishResult {
-    author: String,
-    version: String,
-    wasm_name: String,
-    wasm_hash: String,
+    author: Option<String>,
+    version: Option<String>,
+    wasm_name: Option<String>,
+    wasm_hash: Option<String>,
 }
 
 #[derive(Serialize)]
