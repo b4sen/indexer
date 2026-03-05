@@ -91,6 +91,13 @@ async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> H
         Err(resp) => return resp,
     };
 
+    // Groups by wasm_name (priority to the latest publish by ledger_sequence)
+    // Edgecase: if there are multiple publishes in the same ledger, rely on semver
+
+    // Finally, all records are sorted first by ledger_sequence (including passed ledger),
+    // and then by id (excluding passed id). Because IDs are strings, we transform passed id
+    // With adding an extra 'z' symbol to ensure string is lexicographically greater
+    // to go to the next transaction in the same ledger (if any)
     let rows = sqlx::query_as::<_, WasmRow>(
         "SELECT id, author, version, wasm_name, wasm_hash FROM \
            (SELECT *, ROW_NUMBER() OVER \
