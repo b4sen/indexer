@@ -294,6 +294,19 @@ fn parse_cursor(cursor: &Option<String>) -> Result<(i64, String), HttpResponse> 
     Ok((ledger, cursor))
 }
 
+async fn index() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "name": "Registry Indexer API",
+        "endpoints": [
+            { "method": "GET", "path": "/wasms", "description": "List published wasms" },
+            { "method": "GET", "path": "/wasms/{wasm_name}", "description": "Get details for a specific wasm" },
+            { "method": "GET", "path": "/contracts", "description": "List deployed contracts" },
+            { "method": "GET", "path": "/contracts/{contract_name}", "description": "Get details for a specific contract" },
+            { "method": "GET", "path": "/health", "description": "Health check" }
+        ]
+    }))
+}
+
 async fn health() -> HttpResponse {
     HttpResponse::Ok().finish()
 }
@@ -318,6 +331,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
+            .route("/", web::get().to(index))
             .route("/wasms", web::get().to(get_wasms))
             .route("/wasms/{wasm_name}", web::get().to(get_wasm))
             .route("/contracts", web::get().to(get_contracts))
