@@ -9,7 +9,7 @@ struct QueryParams {
     cursor: Option<String>,
 }
 
-/// Slim result for /wasms list endpoint
+/// Slim result for /wasms list endpoint and versions array
 #[derive(sqlx::FromRow, Serialize)]
 struct WasmResult {
     #[serde(skip)]
@@ -20,9 +20,7 @@ struct WasmResult {
     wasm_hash: Option<String>,
 }
 
-/// Full detail for /wasms/{wasm_name} endpoint
-///
-/// From table "publishes_5":
+/// DB row mapping for publishes_5
 ///
 /// ```
 ///       Column      |            Type             | Collation | Nullable | Default
@@ -37,7 +35,7 @@ struct WasmResult {
 ///  wasm_hash        | text                        |           |          |
 /// ```
 #[derive(sqlx::FromRow, Serialize)]
-struct WasmDetail {
+struct WasmDetailRow {
     id: String,
     transaction_hash: String,
     ledger_sequence: i64,
@@ -46,6 +44,14 @@ struct WasmDetail {
     version: Option<String>,
     wasm_name: Option<String>,
     wasm_hash: Option<String>,
+}
+
+/// Full detail for /wasms/{wasm_name} endpoint
+#[derive(Serialize)]
+struct WasmDetail {
+    #[serde(flatten)]
+    row: WasmDetailRow,
+    versions: Vec<WasmResult>,
 }
 
 /// Slim result for /contracts list endpoint
@@ -71,8 +77,8 @@ struct ContractResult {
 ///  transaction_hash | text                        |           | not null |
 ///  ledger_sequence  | bigint                      |           | not null |
 ///  created_at       | timestamp without time zone |           | not null |
-///  contract_id      | text                        |           |          |
-///  contract_name    | text                        |           |          |
+///  contract_id      | text                        |           |NULLABLE??|
+///  contract_name    | text                        |           |NULLABLE??|
 ///  deployer         | text                        |           |          |
 ///  version          | text                        |           |          |
 ///  wasm_name        | text                        |           |          |
@@ -124,8 +130,11 @@ async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> H
     let rows = sqlx::query_as::<_, WasmResult>(
         "SELECT id, author, version, wasm_name, wasm_hash FROM \
            (SELECT *, ROW_NUMBER() OVER \
-             (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
+             (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, \
+              string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::int[] DESC \
+             ) AS rn \
              FROM public.publishes_5 \
+             WHERE ledger_sequence >= $1 \
            ) AS sub \
          WHERE rn = 1 AND (ledger_sequence, id) >= ($1, $2) \
          ORDER BY ledger_sequence, id ASC \
@@ -156,27 +165,71 @@ async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> H
     }
 }
 
-async fn get_wasm(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpResponse {
-    let wasm_name = path.into_inner();
-
-    let row = sqlx::query_as::<_, WasmDetail>(
-        "SELECT id, transaction_hash, ledger_sequence, created_at, \
-                author, version, wasm_name, wasm_hash FROM \
-           (SELECT *, ROW_NUMBER() OVER \
-             (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
+async fn fetch_wasm_detail(
+    pool: &PgPool,
+    wasm_name: &str,
+    version: Option<&str>,
+) -> HttpResponse {
+    let row = if let Some(ver) = version {
+        sqlx::query_as::<_, WasmDetailRow>(
+            "SELECT id, transaction_hash, ledger_sequence, created_at, \
+                    author, version, wasm_name, wasm_hash \
              FROM public.publishes_5 \
-           ) AS sub \
-         WHERE rn = 1 AND wasm_name = $1",
-    )
-    .bind(&wasm_name)
-    .fetch_optional(pool.get_ref())
-    .await;
+             WHERE wasm_name = $1 AND version = $2",
+        )
+        .bind(wasm_name)
+        .bind(ver)
+        .fetch_optional(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, WasmDetailRow>(
+            "SELECT id, transaction_hash, ledger_sequence, created_at, \
+                    author, version, wasm_name, wasm_hash FROM \
+               (SELECT *, ROW_NUMBER() OVER \
+                 (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, \
+                  string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::int[] DESC \
+                 ) AS rn \
+                 FROM public.publishes_5 \
+               ) AS sub \
+             WHERE rn = 1 AND wasm_name = $1",
+        )
+        .bind(wasm_name)
+        .fetch_optional(pool)
+        .await
+    };
 
     match row {
-        Ok(Some(r)) => HttpResponse::Ok().json(r),
-        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: format!("Wasm '{wasm_name}' not found"),
-        }),
+        Ok(Some(detail_row)) => {
+            let versions = sqlx::query_as::<_, WasmResult>(
+                "SELECT id, author, version, wasm_name, wasm_hash \
+                 FROM public.publishes_5 \
+                 WHERE wasm_name = $1 \
+                 ORDER BY string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::int[] DESC",
+            )
+            .bind(wasm_name)
+            .fetch_all(pool)
+            .await;
+
+            match versions {
+                Ok(v) => {
+                    HttpResponse::Ok().json(WasmDetail { row: detail_row, versions: v })
+                }
+                Err(e) => {
+                    eprintln!("Database error: {e}");
+                    HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Internal server error".into(),
+                    })
+                }
+            }
+        }
+        Ok(None) => {
+            let msg = if let Some(ver) = version {
+                format!("Wasm '{wasm_name}' version '{ver}' not found")
+            } else {
+                format!("Wasm '{wasm_name}' not found")
+            };
+            HttpResponse::NotFound().json(ErrorResponse { error: msg })
+        }
         Err(e) => {
             eprintln!("Database error: {e}");
             HttpResponse::InternalServerError().json(ErrorResponse {
@@ -184,6 +237,19 @@ async fn get_wasm(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpRespo
             })
         }
     }
+}
+
+async fn get_wasm_latest(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpResponse {
+    let wasm_name = path.into_inner();
+    fetch_wasm_detail(pool.get_ref(), &wasm_name, None).await
+}
+
+async fn get_wasm_version(
+    pool: web::Data<PgPool>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (wasm_name, version) = path.into_inner();
+    fetch_wasm_detail(pool.get_ref(), &wasm_name, Some(&version)).await
 }
 
 async fn get_contracts(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> HttpResponse {
@@ -200,12 +266,9 @@ async fn get_contracts(pool: web::Data<PgPool>, query: web::Query<QueryParams>) 
     };
 
     let rows = sqlx::query_as::<_, ContractResult>(
-        "SELECT id, contract_id, contract_name, deployer, version, wasm_name FROM \
-           (SELECT *, ROW_NUMBER() OVER \
-             (PARTITION BY contract_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
-             FROM public.deploys_5 \
-           ) AS sub \
-         WHERE rn = 1 AND (ledger_sequence, id) >= ($1, $2) \
+        "SELECT id, contract_id, contract_name, deployer, version, wasm_name \
+         FROM public.deploys_5 \
+         WHERE (ledger_sequence, id) >= ($1, $2) \
          ORDER BY ledger_sequence, id ASC \
          LIMIT $3",
     )
@@ -239,12 +302,9 @@ async fn get_contract(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpR
 
     let row = sqlx::query_as::<_, ContractDetail>(
         "SELECT id, transaction_hash, ledger_sequence, created_at, \
-                contract_id, contract_name, deployer, version, wasm_name FROM \
-           (SELECT *, ROW_NUMBER() OVER \
-             (PARTITION BY contract_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
-             FROM public.deploys_5 \
-           ) AS sub \
-         WHERE rn = 1 AND contract_name = $1",
+                contract_id, contract_name, deployer, version, wasm_name \
+         FROM public.deploys_5 \
+         WHERE contract_name = $1",
     )
     .bind(&contract_name)
     .fetch_optional(pool.get_ref())
@@ -288,6 +348,7 @@ fn parse_cursor(cursor: &Option<String>) -> Result<(i64, String), HttpResponse> 
         }));
     }
 
+    // `id` format is <ledger>-<tx hash>-op-<op number>-event-<event number>
     // Append 'z' to make the cursor lexicographically greater, advancing past
     // the current transaction within the same ledger.
     let cursor = format!("{}-{}-z", parts[0], parts[1]);
@@ -299,7 +360,8 @@ async fn index() -> HttpResponse {
         "name": "Registry Indexer API",
         "endpoints": [
             { "method": "GET", "path": "/wasms", "description": "List published wasms" },
-            { "method": "GET", "path": "/wasms/{wasm_name}", "description": "Get details for a specific wasm" },
+            { "method": "GET", "path": "/wasms/{wasm_name}", "description": "Get details for the latest version of a specific wasm" },
+            { "method": "GET", "path": "/wasms/{wasm_name}/v/{version}", "description": "Get details for a specific version of a wasm" },
             { "method": "GET", "path": "/contracts", "description": "List deployed contracts" },
             { "method": "GET", "path": "/contracts/{contract_name}", "description": "Get details for a specific contract" },
             { "method": "GET", "path": "/health", "description": "Health check" }
@@ -333,7 +395,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .route("/", web::get().to(index))
             .route("/wasms", web::get().to(get_wasms))
-            .route("/wasms/{wasm_name}", web::get().to(get_wasm))
+            .route("/wasms/{wasm_name}", web::get().to(get_wasm_latest))
+            .route("/wasms/{wasm_name}/v/{version}", web::get().to(get_wasm_version))
             .route("/contracts", web::get().to(get_contracts))
             .route("/contracts/{contract_name}", web::get().to(get_contract))
             .route("/health", web::get().to(health))
