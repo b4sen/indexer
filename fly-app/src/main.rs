@@ -130,9 +130,7 @@ async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> H
     let rows = sqlx::query_as::<_, WasmResult>(
         "SELECT id, author, version, wasm_name, wasm_hash FROM \
            (SELECT *, ROW_NUMBER() OVER \
-             (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, \
-              string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::bigint[] DESC \
-             ) AS rn \
+             (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
              FROM public.publishes_5 \
            ) AS sub \
          WHERE rn = 1 AND (ledger_sequence, id) >= ($1, $2) \
@@ -181,9 +179,7 @@ async fn fetch_wasm_detail(pool: &PgPool, wasm_name: &str, version: Option<&str>
             "SELECT id, transaction_hash, ledger_sequence, created_at, \
                     author, version, wasm_name, wasm_hash FROM \
                (SELECT *, ROW_NUMBER() OVER \
-                 (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, \
-                  string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::bigint[] DESC \
-                 ) AS rn \
+                 (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, version DESC) AS rn \
                  FROM public.publishes_5 \
                ) AS sub \
              WHERE rn = 1 AND wasm_name = $1",
@@ -199,7 +195,7 @@ async fn fetch_wasm_detail(pool: &PgPool, wasm_name: &str, version: Option<&str>
                 "SELECT id, author, version, wasm_name, wasm_hash \
                  FROM public.publishes_5 \
                  WHERE wasm_name = $1 \
-                 ORDER BY string_to_array(split_part(COALESCE(version, '0.0.0'), '-', 1), '.')::bigint[] DESC",
+                 ORDER BY ledger_sequence DESC, version DESC",
             )
             .bind(wasm_name)
             .fetch_all(pool)
