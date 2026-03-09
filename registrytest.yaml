@@ -20,7 +20,7 @@ transforms:
           CASE 
               WHEN contract_id = 'CBFFTTX7QKA76FS4LHHQG54BC7JF5RMEX4RTNNJ5KEL76LYHVO3E3OEE' THEN 'main'
               WHEN contract_id = 'CAXY4DZ4OM6XLHGXGWETIHXPJEJKGUZNWSBENC5XHSL3SSMCIO73U7SQ' THEN 'unverified'
-          END AS registry_type
+          END AS channel
       FROM goldsky_source 
 
       WHERE contract_id IN (
@@ -38,7 +38,7 @@ transforms:
         ledger_sequence, 
         ledger_closed_at as created_at, 
         JSON_VALUE(topics, '$[0].symbol') as command,
-        registry_type,
+        channel,
         data
       from transform_1_events
   transform_3_register_events:
@@ -50,7 +50,7 @@ transforms:
           transaction_hash, 
           ledger_sequence, 
           created_at, 
-          registry_type,
+          channel,
 
           -- Contract Name (Looking for 'contract_name' key, extracting 'string' value)
           CASE
@@ -79,7 +79,7 @@ transforms:
         transaction_hash, 
         ledger_sequence, 
         created_at, 
-        registry_type,
+        channel,
 
       -- Author (Looking for 'author' key, extracting 'address' value)
         CASE
@@ -139,7 +139,7 @@ transforms:
         transaction_hash, 
         ledger_sequence, 
         created_at, 
-        registry_type,
+        channel,
 
         -- WASM Name (Looking for 'wasm_name' key, extracting 'string' value)
         CASE
