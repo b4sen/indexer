@@ -1,13 +1,14 @@
+name: registrytest
 resource_size: s
+use_dedicated_ip: false
 sources:
   goldsky_source:
     dataset_name: stellar_testnet.events
-    version: 3.0.0
-    type: dataset
     start_at: latest
+    type: dataset
+    version: 3.0.0
 transforms:
   transform_1_events:
-    type: sql
     primary_key: id
     sql: >-
       --  stellar registry fetch-contract-id registry  
@@ -28,8 +29,8 @@ transforms:
           'CAXY4DZ4OM6XLHGXGWETIHXPJEJKGUZNWSBENC5XHSL3SSMCIO73U7SQ'
       ) AND in_successful_contract_call = true  AND transaction_successful =
       true
-  transform_2_events_with_command_name:
     type: sql
+  transform_2_events_with_command_name:
     primary_key: id
     sql: |-
       select 
@@ -41,97 +42,8 @@ transforms:
         channel,
         data
       from transform_1_events
-  transform_3_register_events:
     type: sql
-    primary_key: id
-    sql: |-
-      SELECT 
-          id,
-          transaction_hash, 
-          ledger_sequence, 
-          created_at, 
-          channel,
-
-          -- Contract Name (Looking for 'contract_name' key, extracting 'string' value)
-          CASE
-              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_name' 
-                  THEN JSON_VALUE(data, '$.map[0].val.string')
-              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_name' 
-                  THEN JSON_VALUE(data, '$.map[1].val.string')
-          END AS contract_name,
-
-          -- Contract ID (Looking for 'contract_id' key, extracting 'address' value)
-          CASE
-              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_id' 
-                  THEN JSON_VALUE(data, '$.map[0].val.address')
-              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_id' 
-                  THEN JSON_VALUE(data, '$.map[1].val.address')
-          END AS contract_id
-
-      FROM transform_2_events_with_command_name
-      WHERE command = 'register'
-  transform_3_publish_events:
-    type: sql
-    primary_key: id
-    sql: |-
-      select 
-        id,
-        transaction_hash, 
-        ledger_sequence, 
-        created_at, 
-        channel,
-
-      -- Author (Looking for 'author' key, extracting 'address' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'author' 
-            THEN JSON_VALUE(data, '$.map[0].val.address')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'author' 
-            THEN JSON_VALUE(data, '$.map[1].val.address')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'author' 
-            THEN JSON_VALUE(data, '$.map[2].val.address')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'author' 
-            THEN JSON_VALUE(data, '$.map[3].val.address')
-        END AS author,
-
-        -- Version (Looking for 'version' key, extracting 'string' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[0].val.string')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[1].val.string')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[2].val.string')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[3].val.string')
-        END AS wasm_version,
-
-        -- WASM Hash (Looking for 'wasm_hash' key, extracting 'bytes' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_hash' 
-            THEN JSON_VALUE(data, '$.map[0].val.bytes')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_hash' 
-            THEN JSON_VALUE(data, '$.map[1].val.bytes')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_hash' 
-            THEN JSON_VALUE(data, '$.map[2].val.bytes')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_hash' 
-            THEN JSON_VALUE(data, '$.map[3].val.bytes')
-        END AS wasm_hash,
-
-        -- WASM Name (Looking for 'wasm_name' key, extracting 'string' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[0].val.string')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[1].val.string')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[2].val.string')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[3].val.string')
-        END AS wasm_name
-      from transform_2_events_with_command_name
-      where command = 'publish'
   transform_3_deploy_events:
-    type: sql
     primary_key: id
     sql: |-
       SELECT 
@@ -191,28 +103,118 @@ transforms:
 
       FROM transform_2_events_with_command_name
       WHERE command = 'deploy'
+    type: sql
+  transform_3_publish_events:
+    primary_key: id
+    sql: |-
+      select 
+        id,
+        transaction_hash, 
+        ledger_sequence, 
+        created_at, 
+        channel,
+
+      -- Author (Looking for 'author' key, extracting 'address' value)
+        CASE
+          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'author' 
+            THEN JSON_VALUE(data, '$.map[0].val.address')
+          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'author' 
+            THEN JSON_VALUE(data, '$.map[1].val.address')
+          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'author' 
+            THEN JSON_VALUE(data, '$.map[2].val.address')
+          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'author' 
+            THEN JSON_VALUE(data, '$.map[3].val.address')
+        END AS author,
+
+        -- Version (Looking for 'version' key, extracting 'string' value)
+        CASE
+          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'version' 
+            THEN JSON_VALUE(data, '$.map[0].val.string')
+          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'version' 
+            THEN JSON_VALUE(data, '$.map[1].val.string')
+          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'version' 
+            THEN JSON_VALUE(data, '$.map[2].val.string')
+          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'version' 
+            THEN JSON_VALUE(data, '$.map[3].val.string')
+        END AS wasm_version,
+
+        -- WASM Hash (Looking for 'wasm_hash' key, extracting 'bytes' value)
+        CASE
+          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_hash' 
+            THEN JSON_VALUE(data, '$.map[0].val.bytes')
+          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_hash' 
+            THEN JSON_VALUE(data, '$.map[1].val.bytes')
+          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_hash' 
+            THEN JSON_VALUE(data, '$.map[2].val.bytes')
+          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_hash' 
+            THEN JSON_VALUE(data, '$.map[3].val.bytes')
+        END AS wasm_hash,
+
+        -- WASM Name (Looking for 'wasm_name' key, extracting 'string' value)
+        CASE
+          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_name' 
+            THEN JSON_VALUE(data, '$.map[0].val.string')
+          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_name' 
+            THEN JSON_VALUE(data, '$.map[1].val.string')
+          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_name' 
+            THEN JSON_VALUE(data, '$.map[2].val.string')
+          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_name' 
+            THEN JSON_VALUE(data, '$.map[3].val.string')
+        END AS wasm_name
+      from transform_2_events_with_command_name
+      where command = 'publish'
+    type: sql
+  transform_3_register_events:
+    primary_key: id
+    sql: |-
+      SELECT 
+          id,
+          transaction_hash, 
+          ledger_sequence, 
+          created_at, 
+          channel,
+
+          -- Contract Name (Looking for 'contract_name' key, extracting 'string' value)
+          CASE
+              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_name' 
+                  THEN JSON_VALUE(data, '$.map[0].val.string')
+              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_name' 
+                  THEN JSON_VALUE(data, '$.map[1].val.string')
+          END AS contract_name,
+
+          -- Contract ID (Looking for 'contract_id' key, extracting 'address' value)
+          CASE
+              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_id' 
+                  THEN JSON_VALUE(data, '$.map[0].val.address')
+              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_id' 
+                  THEN JSON_VALUE(data, '$.map[1].val.address')
+          END AS contract_id
+
+      FROM transform_2_events_with_command_name
+      WHERE command = 'register'
+    type: sql
 sinks:
-  raw_events_backup:
-    type: postgres
-    table: v1_raw_events_backup
-    schema: public
-    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: transform_1_events
-  register_events_pg:
-    type: postgres
-    table: v1_registered_wasms
-    schema: public
-    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: transform_3_register_events
-  publish_events_pg:
-    type: postgres
-    table: v1_published_wasms
-    schema: public
-    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: transform_3_publish_events
   deploy_events_pg:
-    type: postgres
-    table: v1_deployed_contracts
+    from: transform_3_deploy_events
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: transform_3_deploy_events
+    table: v1_deployed_contracts
+    type: postgres
+  publish_events_pg:
+    from: transform_3_publish_events
+    schema: public
+    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+    table: v1_published_wasms
+    type: postgres
+  raw_events_backup:
+    from: transform_1_events
+    schema: public
+    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+    table: v1_raw_events_backup
+    type: postgres
+  register_events_pg:
+    from: transform_3_register_events
+    schema: public
+    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+    table: v1_registered_wasms
+    type: postgres
