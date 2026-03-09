@@ -362,6 +362,10 @@ async fn index() -> HttpResponse {
 }
 
 async fn health() -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+
+async fn hello() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
       "status": "OK",
     }))
@@ -397,6 +401,7 @@ async fn main() -> std::io::Result<()> {
             .route("/contracts", web::get().to(get_contracts))
             .route("/contracts/{contract_name}", web::get().to(get_contract))
             .route("/health", web::get().to(health))
+            .route("/hello", web::get().to(hello))
     })
     .bind(("0.0.0.0", port))?
     .run()
