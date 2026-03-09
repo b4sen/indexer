@@ -1,20 +1,34 @@
 resource_size: s
 sources:
-  stellar_events:
+  goldsky_source:
     dataset_name: stellar_testnet.events
     version: 3.0.0
     type: dataset
     start_at: latest
 transforms:
-  events:
+  transform_1_events:
     type: sql
     primary_key: id
-    sql: |-
-      SELECT * from stellar_events 
-        where contract_id = 'CBF5NGWSJARS6CKGEJ2WUR4RSSHQFKEXUS2V5FF6VJRBSLXZB2WMHXIV' 
-        and in_successful_contract_call=true 
-        and transaction_successful=true
-  events_with_command_name:
+    sql: >-
+      --  stellar registry fetch-contract-id registry  
+      'CBFFTTX7QKA76FS4LHHQG54BC7JF5RMEX4RTNNJ5KEL76LYHVO3E3OEE' --  stellar
+      registry fetch-contract-id unverified
+      'CAXY4DZ4OM6XLHGXGWETIHXPJEJKGUZNWSBENC5XHSL3SSMCIO73U7SQ'
+
+      SELECT 
+          *,
+          CASE 
+              WHEN contract_id = 'CBFFTTX7QKA76FS4LHHQG54BC7JF5RMEX4RTNNJ5KEL76LYHVO3E3OEE' THEN 'main'
+              WHEN contract_id = 'CAXY4DZ4OM6XLHGXGWETIHXPJEJKGUZNWSBENC5XHSL3SSMCIO73U7SQ' THEN 'unverified'
+          END AS registry_type
+      FROM goldsky_source 
+
+      WHERE contract_id IN (
+          'CBFFTTX7QKA76FS4LHHQG54BC7JF5RMEX4RTNNJ5KEL76LYHVO3E3OEE', 
+          'CAXY4DZ4OM6XLHGXGWETIHXPJEJKGUZNWSBENC5XHSL3SSMCIO73U7SQ'
+      ) AND in_successful_contract_call = true  AND transaction_successful =
+      true
+  transform_2_events_with_command_name:
     type: sql
     primary_key: id
     sql: |-
@@ -24,9 +38,39 @@ transforms:
         ledger_sequence, 
         ledger_closed_at as created_at, 
         JSON_VALUE(topics, '$[0].symbol') as command,
+        registry_type,
         data
-      from events
-  publishes:
+      from transform_1_events
+  transform_3_register_events:
+    type: sql
+    primary_key: id
+    sql: |-
+      SELECT 
+          id,
+          transaction_hash, 
+          ledger_sequence, 
+          created_at, 
+          registry_type,
+
+          -- Contract Name (Looking for 'contract_name' key, extracting 'string' value)
+          CASE
+              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_name' 
+                  THEN JSON_VALUE(data, '$.map[0].val.string')
+              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_name' 
+                  THEN JSON_VALUE(data, '$.map[1].val.string')
+          END AS contract_name,
+
+          -- Contract ID (Looking for 'contract_id' key, extracting 'address' value)
+          CASE
+              WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_id' 
+                  THEN JSON_VALUE(data, '$.map[0].val.address')
+              WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_id' 
+                  THEN JSON_VALUE(data, '$.map[1].val.address')
+          END AS contract_id
+
+      FROM transform_2_events_with_command_name
+      WHERE command = 'register'
+  transform_3_publish_events:
     type: sql
     primary_key: id
     sql: |-
@@ -35,6 +79,8 @@ transforms:
         transaction_hash, 
         ledger_sequence, 
         created_at, 
+        registry_type,
+
       -- Author (Looking for 'author' key, extracting 'address' value)
         CASE
           WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'author' 
@@ -57,7 +103,7 @@ transforms:
             THEN JSON_VALUE(data, '$.map[2].val.string')
           WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'version' 
             THEN JSON_VALUE(data, '$.map[3].val.string')
-        END AS version,
+        END AS wasm_version,
 
         -- WASM Hash (Looking for 'wasm_hash' key, extracting 'bytes' value)
         CASE
@@ -82,104 +128,91 @@ transforms:
           WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_name' 
             THEN JSON_VALUE(data, '$.map[3].val.string')
         END AS wasm_name
-      from events_with_command_name
+      from transform_2_events_with_command_name
       where command = 'publish'
-  deploys:
+  transform_3_deploy_events:
     type: sql
     primary_key: id
     sql: |-
-      select 
+      SELECT 
         id,
         transaction_hash, 
         ledger_sequence, 
         created_at, 
-      -- Contract ID (Looking for 'contract_id' key, extracting 'address' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_id' 
-            THEN JSON_VALUE(data, '$.map[0].val.address')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_id' 
-            THEN JSON_VALUE(data, '$.map[1].val.address')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'contract_id' 
-            THEN JSON_VALUE(data, '$.map[2].val.address')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'contract_id' 
-            THEN JSON_VALUE(data, '$.map[3].val.address')
-          WHEN JSON_VALUE(data, '$.map[4].key.symbol') = 'contract_id' 
-            THEN JSON_VALUE(data, '$.map[4].val.address')
-        END AS contract_id,
-
-        -- Contract Name (Looking for 'contract_name' key, extracting 'string' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_name' 
-            THEN JSON_VALUE(data, '$.map[0].val.string')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_name' 
-            THEN JSON_VALUE(data, '$.map[1].val.string')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'contract_name' 
-            THEN JSON_VALUE(data, '$.map[2].val.string')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'contract_name' 
-            THEN JSON_VALUE(data, '$.map[3].val.string')
-          WHEN JSON_VALUE(data, '$.map[4].key.symbol') = 'contract_name' 
-            THEN JSON_VALUE(data, '$.map[4].val.string')
-        END AS contract_name,
-
-        -- Deployer (Looking for 'deployer' key, extracting 'address' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'deployer' 
-            THEN JSON_VALUE(data, '$.map[0].val.address')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'deployer' 
-            THEN JSON_VALUE(data, '$.map[1].val.address')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'deployer' 
-            THEN JSON_VALUE(data, '$.map[2].val.address')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'deployer' 
-            THEN JSON_VALUE(data, '$.map[3].val.address')
-          WHEN JSON_VALUE(data, '$.map[4].key.symbol') = 'deployer' 
-            THEN JSON_VALUE(data, '$.map[4].val.address')
-        END AS deployer,
-
-        -- Version (Looking for 'version' key, extracting 'string' value)
-        CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[0].val.string')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[1].val.string')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[2].val.string')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[3].val.string')
-          WHEN JSON_VALUE(data, '$.map[4].key.symbol') = 'version' 
-            THEN JSON_VALUE(data, '$.map[4].val.string')
-        END AS version,
+        registry_type,
 
         -- WASM Name (Looking for 'wasm_name' key, extracting 'string' value)
         CASE
-          WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[0].val.string')
-          WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[1].val.string')
-          WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[2].val.string')
-          WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[3].val.string')
-          WHEN JSON_VALUE(data, '$.map[4].key.symbol') = 'wasm_name' 
-            THEN JSON_VALUE(data, '$.map[4].val.string')
-        END AS wasm_name
-      from events_with_command_name
-      where command = 'deploy'
+            WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'wasm_name' 
+                THEN JSON_VALUE(data, '$.map[0].val.string')
+            WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'wasm_name' 
+                THEN JSON_VALUE(data, '$.map[1].val.string')
+            WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'wasm_name' 
+                THEN JSON_VALUE(data, '$.map[2].val.string')
+            WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'wasm_name' 
+                THEN JSON_VALUE(data, '$.map[3].val.string')
+        END AS wasm_name,
+
+        -- Version (Looking for 'version' key, extracting 'string' value)
+        CASE
+            WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'version' 
+                THEN JSON_VALUE(data, '$.map[0].val.string')
+            WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'version' 
+                THEN JSON_VALUE(data, '$.map[1].val.string')
+            WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'version' 
+                THEN JSON_VALUE(data, '$.map[2].val.string')
+            WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'version' 
+                THEN JSON_VALUE(data, '$.map[3].val.string')
+        END AS wasm_version,
+
+        -- Deployer (Looking for 'deployer' key, extracting 'address' value)
+        CASE
+            WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'deployer' 
+                THEN JSON_VALUE(data, '$.map[0].val.address')
+            WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'deployer' 
+                THEN JSON_VALUE(data, '$.map[1].val.address')
+            WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'deployer' 
+                THEN JSON_VALUE(data, '$.map[2].val.address')
+            WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'deployer' 
+                THEN JSON_VALUE(data, '$.map[3].val.address')
+        END AS deployer,
+
+        -- Contract ID (Looking for 'contract_id' key, extracting 'address' value)
+        CASE
+            WHEN JSON_VALUE(data, '$.map[0].key.symbol') = 'contract_id' 
+                THEN JSON_VALUE(data, '$.map[0].val.address')
+            WHEN JSON_VALUE(data, '$.map[1].key.symbol') = 'contract_id' 
+                THEN JSON_VALUE(data, '$.map[1].val.address')
+            WHEN JSON_VALUE(data, '$.map[2].key.symbol') = 'contract_id' 
+                THEN JSON_VALUE(data, '$.map[2].val.address')
+            WHEN JSON_VALUE(data, '$.map[3].key.symbol') = 'contract_id' 
+                THEN JSON_VALUE(data, '$.map[3].val.address')
+        END AS contract_id
+
+      FROM transform_2_events_with_command_name
+      WHERE command = 'deploy'
 sinks:
-  raw_events:
+  raw_events_backup:
     type: postgres
-    table: events
+    table: v1_raw_events_backup
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: events
-  registry_deploys:
+    from: transform_1_events
+  register_events_pg:
     type: postgres
-    table: deploys
+    table: v1_registered_wasms
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: deploys
-  sink_4:
+    from: transform_3_register_events
+  publish_events_pg:
     type: postgres
-    table: publishes
+    table: v1_published_wasms
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    from: publishes
+    from: transform_3_publish_events
+  deploy_events_pg:
+    type: postgres
+    table: v1_deployed_contracts
+    schema: public
+    secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+    from: transform_3_deploy_events
