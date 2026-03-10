@@ -9,13 +9,23 @@ struct QueryParams {
     cursor: Option<String>,
 }
 
-/// Slim result for /wasms list endpoint and versions array
+/// Slim result for /wasms list endpoint
 #[derive(sqlx::FromRow, Serialize)]
 struct WasmResult {
     #[serde(skip)]
     id: String,
     author: Option<String>,
     channel: Option<String>,
+    wasm_version: Option<String>,
+    wasm_name: Option<String>,
+    wasm_hash: Option<String>,
+}
+
+
+/// Slim result for versions array
+#[derive(sqlx::FromRow, Serialize)]
+struct WasmVersionResult {
+    author: Option<String>,
     wasm_version: Option<String>,
     wasm_name: Option<String>,
     wasm_hash: Option<String>,
@@ -54,7 +64,7 @@ struct WasmDetailRow {
 struct WasmDetail {
     #[serde(flatten)]
     row: WasmDetailRow,
-    versions: Vec<WasmResult>,
+    versions: Vec<WasmVersionResult>,
 }
 
 /// Slim result for /contracts list endpoint
@@ -62,6 +72,7 @@ struct WasmDetail {
 struct ContractResult {
     #[serde(skip)]
     id: String,
+    channel: Option<String>,
     contract_id: Option<String>,
     contract_name: Option<String>,
     deployer: Option<String>,
@@ -102,6 +113,7 @@ struct ContractDetail {
     transaction_hash: String,
     ledger_sequence: i64,
     created_at: chrono::NaiveDateTime,
+    channel: Option<String>,
     contract_id: Option<String>,
     contract_name: Option<String>,
     deployer: Option<String>,
@@ -120,27 +132,7 @@ struct ErrorResponse {
     error: String,
 }
 
-#[deprecated = "to be removed get_wasms_by_type"]
-async fn get_wasms_legacy(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> HttpResponse {
-    get_wasms("unverified", pool, query).await
-}
-
-async fn get_wasms_by_type(
-    pool: web::Data<PgPool>,
-    path: web::Path<String>,
-    query: web::Query<QueryParams>,
-) -> HttpResponse {
-    let channel = path.into_inner();
-    if channel != "main" && channel != "unverified" {
-        return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Limit must be an integer between 2 and 200".into(),
-        });
-    }
-    get_wasms(&channel, pool, query).await
-}
-
 async fn get_wasms(
-    channel: &str,
     pool: web::Data<PgPool>,
     query: web::Query<QueryParams>,
 ) -> HttpResponse {
@@ -170,13 +162,11 @@ async fn get_wasms(
              FROM public.v1_published_wasms \
            ) AS sub \
          WHERE rn = 1 AND (ledger_sequence, id) >= ($1, $2) \
-         AND channel = $3 \
          ORDER BY ledger_sequence, id ASC \
-         LIMIT $4",
+         LIMIT $3",
     )
     .bind(ledger)
     .bind(&cursor)
-    .bind(channel)
     .bind(limit)
     .fetch_all(pool.get_ref())
     .await;
@@ -221,7 +211,7 @@ async fn fetch_wasm_detail(
     } else {
         sqlx::query_as::<_, WasmDetailRow>(
             "SELECT id, transaction_hash, ledger_sequence, created_at, \
-                    author, wasm_version, wasm_name, wasm_hash FROM \
+                    author, wasm_version, wasm_name, wasm_hash, channel FROM \
                (SELECT *, ROW_NUMBER() OVER \
                  (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, wasm_version DESC) AS rn \
                  FROM public.v1_published_wasms \
@@ -237,8 +227,8 @@ async fn fetch_wasm_detail(
     match row {
         // TODO: can do only one select and filter the results
         Ok(Some(detail_row)) => {
-            let versions = sqlx::query_as::<_, WasmResult>(
-                "SELECT id, author, wasm_version, wasm_name, wasm_hash \
+            let versions = sqlx::query_as::<_, WasmVersionResult>(
+                "SELECT author, wasm_version, wasm_name, wasm_hash, channel \
                  FROM public.v1_published_wasms \
                  WHERE wasm_name = $1 AND channel = $2 \
                  ORDER BY ledger_sequence DESC, wasm_version DESC",
@@ -278,10 +268,9 @@ async fn fetch_wasm_detail(
     }
 }
 
-#[deprecated = "to be removed get_wasm_latest"]
-async fn get_wasm_latest_legacy(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpResponse {
+async fn get_wasm_main_channel(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpResponse {
     let wasm_name = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), "unverified", &wasm_name, None).await
+    fetch_wasm_detail(pool.get_ref(), "main", &wasm_name, None).await
 }
 
 async fn get_wasm_latest(
@@ -297,13 +286,12 @@ async fn get_wasm_latest(
     fetch_wasm_detail(pool.get_ref(), &channel, &wasm_name, None).await
 }
 
-#[deprecated = "to be removed get_wasm_version"]
-async fn get_wasm_version_legacy(
+async fn get_wasm_version_main(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (wasm_name, version) = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), "unverified", &wasm_name, Some(&version)).await
+    fetch_wasm_detail(pool.get_ref(), "main", &wasm_name, Some(&version)).await
 }
 
 async fn get_wasm_version(
@@ -319,30 +307,7 @@ async fn get_wasm_version(
     fetch_wasm_detail(pool.get_ref(), &channel, &wasm_name, Some(&version)).await
 }
 
-#[deprecated = "to be removed get_contracts"]
-async fn get_contracts_legacy(
-    pool: web::Data<PgPool>,
-    query: web::Query<QueryParams>,
-) -> HttpResponse {
-    fetch_contracts("unverified", pool, query).await
-}
-
-async fn get_contracts(
-    pool: web::Data<PgPool>,
-    path: web::Path<String>,
-    query: web::Query<QueryParams>,
-) -> HttpResponse {
-    let channel = path.into_inner();
-    if channel != "main" && channel != "unverified" {
-        return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Limit must be an integer between 2 and 200".into(),
-        });
-    }
-    fetch_contracts(&channel, pool, query).await
-}
-
-async fn fetch_contracts(
-    channel: &str,
+async fn get_contracts_main(
     pool: web::Data<PgPool>,
     query: web::Query<QueryParams>,
 ) -> HttpResponse {
@@ -362,6 +327,7 @@ async fn fetch_contracts(
         "SELECT
                 dc.id,
                 dc.contract_id,
+                dc.channel,
                 rw.contract_name,
                 dc.deployer,
                 dc.wasm_version,
@@ -370,13 +336,11 @@ async fn fetch_contracts(
             LEFT JOIN public.v1_registered_wasms rw
               ON dc.contract_id = rw.contract_id
             WHERE (dc.ledger_sequence, dc.id) >= ($1, $2) \
-            AND dc.channel = $3 \
             ORDER BY dc.ledger_sequence, dc.id ASC \
-            LIMIT $4",
+            LIMIT $3",
     )
     .bind(ledger)
     .bind(&cursor)
-    .bind(&channel)
     .bind(limit)
     .fetch_all(pool.get_ref())
     .await;
@@ -400,14 +364,13 @@ async fn fetch_contracts(
     }
 }
 
-#[deprecated = "to be removed get_contracts"]
-async fn get_single_contract_legacy(
+async fn get_single_contract_main(
     pool: web::Data<PgPool>,
     path: web::Path<String>,
 ) -> HttpResponse {
     let contract_name = path.into_inner();
 
-    fetch_single_contract("unverified", &contract_name, pool).await
+    fetch_single_contract("main", &contract_name, pool).await
 }
 
 async fn get_single_contract(
@@ -438,7 +401,8 @@ async fn fetch_single_contract(
                 rw.contract_name,
                 dc.deployer,
                 dc.wasm_version,
-                dc.wasm_name
+                dc.wasm_name,
+                dc.channel
             FROM public.v1_deployed_contracts dc
             LEFT JOIN public.v1_registered_wasms rw
               ON dc.contract_id = rw.contract_id
@@ -498,11 +462,11 @@ async fn index() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
         "name": "Registry Indexer API",
         "endpoints": [
-            { "method": "GET", "path": "/v1/{channel}/wasms", "description": "List published wasms, where channel is either 'main' or 'unverified'" },
-            { "method": "GET", "path": "/v1/{channel}/wasms/{wasm_name}", "description": "Get details for the latest version of a specific wasm" },
-            { "method": "GET", "path": "/v1/{channel}/wasms/{wasm_name}/v/{version}", "description": "Get details for a specific version of a wasm" },
-            { "method": "GET", "path": "/v1/{channel}/contracts", "description": "List deployed contracts" },
-            { "method": "GET", "path": "/v1/{channel}/contracts/{contract_name}", "description": "Get details for a specific contract" },
+            { "method": "GET", "path": "/v1/wasms", "description": "List published wasms" },
+            { "method": "GET", "path": "/v1/wasms/{wasm_name}", "description": "Get details for the latest version of a specific wasm. Note that a full wasm name may include channel, e.g. 'unverified/hello-world'" },
+            { "method": "GET", "path": "/v1/wasms/{wasm_name}/v/{version}", "description": "Get details for a specific version of a wasm" },
+            { "method": "GET", "path": "/v1/contracts", "description": "List deployed contracts" },
+            { "method": "GET", "path": "/v1/contracts/{contract_name}", "description": "Get details for a specific contract" },
             { "method": "GET", "path": "/health", "description": "Health check" }
         ]
     }))
@@ -533,29 +497,27 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .route("/", web::get().to(index))
-            .route("/wasms", web::get().to(get_wasms_legacy))
-            .route("/v1/{channel}/wasms", web::get().to(get_wasms_by_type))
-            .route("/wasms/{wasm_name}", web::get().to(get_wasm_latest_legacy))
+            .route("/v1/wasms", web::get().to(get_wasms))
+            .route("/v1/wasms/{wasm_name}", web::get().to(get_wasm_main_channel))
             .route(
-                "/v1/{channel}/wasms/{wasm_name}",
+                "/v1/wasms/{channel}/{wasm_name}",
                 web::get().to(get_wasm_latest),
             )
             .route(
-                "/wasms/{wasm_name}/v/{version}",
-                web::get().to(get_wasm_version_legacy),
+                "/v1/wasms/{wasm_name}/v/{version}",
+                web::get().to(get_wasm_version_main),
             )
             .route(
-                "/v1/{channel}/wasms/{wasm_name}/v/{version}",
+                "/v1/wasms/{channel}/{wasm_name}/v/{version}",
                 web::get().to(get_wasm_version),
             )
-            .route("/contracts", web::get().to(get_contracts_legacy))
-            .route("/v1/{channel}/contracts", web::get().to(get_contracts))
+            .route("/v1/contracts", web::get().to(get_contracts_main))
             .route(
-                "/contracts/{contract_name}",
-                web::get().to(get_single_contract_legacy),
+                "/v1/contracts/{contract_name}",
+                web::get().to(get_single_contract_main),
             )
             .route(
-                "/v1/{channel}/contracts/{contract_name}",
+                "/v1/contracts/{channel}/{contract_name}",
                 web::get().to(get_single_contract),
             )
             .route("/health", web::get().to(health))
