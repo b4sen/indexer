@@ -1,12 +1,12 @@
-name: registrytest
+name: registryturbo
 resource_size: s
 use_dedicated_ip: false
 sources:
   goldsky_source:
     dataset_name: stellar_testnet.events
-    start_at: earliest
+    start_at: 2487
     type: dataset
-    version: 3.0.0
+    version: 1.2.0
 transforms:
   transform_1_events:
     primary_key: id
@@ -195,26 +195,34 @@ transforms:
     type: sql
 sinks:
   deploy_events_pg:
+    batch_flush_interval: null
+    batch_size: null
     from: transform_3_deploy_events
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    table: v1_deployed_contracts
+    table: v2_deployed_contracts
     type: postgres
   publish_events_pg:
+    batch_flush_interval: null
+    batch_size: null
     from: transform_3_publish_events
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    table: v1_published_wasms
+    table: v2_published_wasms
     type: postgres
   raw_events_backup:
+    batch_flush_interval: null
+    batch_size: null
     from: transform_1_events
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    table: v1_raw_events_backup
+    table: v2_raw_events_backup
     type: postgres
   register_events_pg:
+    batch_flush_interval: null
+    batch_size: null
     from: transform_3_register_events
     schema: public
     secret_name: HOSTED_POSTGRES_CMJD1KI8O0
-    table: v1_registered_wasms
+    table: v2_registered_contracts
     type: postgres
