@@ -31,7 +31,7 @@ struct WasmVersionResult {
     wasm_hash: Option<String>,
 }
 
-/// DB row mapping for v2_published_wasms
+/// DB row mapping for v3_published_wasms
 ///
 /// ```
 /// Column      |            Type             | Collation | Nullable | Default
@@ -82,7 +82,7 @@ struct ContractResult {
 
 /// Full detail for /contracts/{contract_name} endpoint
 ///
-/// From table "v2_deployed_contracts":
+/// From table "v3_deployed_contracts":
 ///
 /// ```
 /// Column      |            Type             | Collation | Nullable | Default
@@ -97,7 +97,7 @@ struct ContractResult {
 /// deployer         | text                        |           |          |
 /// contract_id      | text                        |           |          |
 /// ```
-/// And table `v2_registered_contracts`
+/// And table `v3_registered_contracts`
 ///       Column      |            Type             | Collation | Nullable | Default
 /// ------------------+-----------------------------+-----------+----------+---------
 ///  id               | text                        |           | not null |
@@ -159,7 +159,7 @@ async fn get_wasms(
         "SELECT id, author, wasm_version, wasm_name, wasm_hash, channel FROM \
            (SELECT *, ROW_NUMBER() OVER \
              (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, wasm_version DESC) AS rn \
-             FROM public.v2_published_wasms \
+             FROM public.v3_published_wasms \
            ) AS sub \
          WHERE rn = 1 AND (ledger_sequence, id) >= ($1, $2) \
          ORDER BY ledger_sequence, id ASC \
@@ -200,7 +200,7 @@ async fn fetch_wasm_detail(
         sqlx::query_as::<_, WasmDetailRow>(
             "SELECT id, transaction_hash, ledger_sequence, created_at, \
                     author, wasm_version, wasm_name, wasm_hash, channel \
-             FROM public.v2_published_wasms \
+             FROM public.v3_published_wasms \
              WHERE wasm_name = $1 AND wasm_version = $2 AND channel = $3",
         )
         .bind(wasm_name)
@@ -214,7 +214,7 @@ async fn fetch_wasm_detail(
                     author, wasm_version, wasm_name, wasm_hash, channel FROM \
                (SELECT *, ROW_NUMBER() OVER \
                  (PARTITION BY wasm_name ORDER BY ledger_sequence DESC, wasm_version DESC) AS rn \
-                 FROM public.v2_published_wasms \
+                 FROM public.v3_published_wasms \
                ) AS sub \
              WHERE rn = 1 AND wasm_name = $1 AND channel = $2",
         )
@@ -229,7 +229,7 @@ async fn fetch_wasm_detail(
         Ok(Some(detail_row)) => {
             let versions = sqlx::query_as::<_, WasmVersionResult>(
                 "SELECT author, wasm_version, wasm_name, wasm_hash, channel \
-                 FROM public.v2_published_wasms \
+                 FROM public.v3_published_wasms \
                  WHERE wasm_name = $1 AND channel = $2 \
                  ORDER BY ledger_sequence DESC, wasm_version DESC",
             )
@@ -332,8 +332,8 @@ async fn get_contracts_main(
                 dc.deployer,
                 dc.wasm_version,
                 dc.wasm_name
-            FROM public.v2_registered_contracts rw
-            LEFT JOIN public.v2_deployed_contracts dc
+            FROM public.v3_registered_contracts rw
+            LEFT JOIN public.v3_deployed_contracts dc
               ON rw.contract_id = dc.contract_id
             WHERE (rw.ledger_sequence, rw.id) >= ($1, $2)
             ORDER BY rw.ledger_sequence, rw.id ASC
@@ -403,8 +403,8 @@ async fn fetch_single_contract(
                 dc.wasm_version,
                 dc.wasm_name,
                 rw.channel
-            FROM public.v2_registered_contracts rw
-            LEFT JOIN public.v2_deployed_contracts dc
+            FROM public.v3_registered_contracts rw
+            LEFT JOIN public.v3_deployed_contracts dc
               ON rw.contract_id = dc.contract_id
             WHERE contract_name = $1 AND rw.channel = $2",
     )
