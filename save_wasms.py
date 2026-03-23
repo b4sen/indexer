@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import urllib.request
 import json
 import sys
@@ -40,9 +41,9 @@ def fetch_wasms(target_directory, base_url_arg="https://registry-indexer.fly.dev
                     # Log specific WASM details and fetch
                     for w in items:
                         name = w.get("wasm_name", "N/A")
-                        # Format as unverified/{name} if channel is unverified
+                        # Skip if channel is unverified
                         if w.get("channel") == "unverified":
-                            name = f"unverified/{name}"
+                            continue
                         hash_val = w.get("wasm_hash", "N/A")
                         version = w.get("wasm_version", "N/A")
                         print(f"    - {name}@{version}: {hash_val}")

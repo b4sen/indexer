@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import sys
 import os
@@ -16,14 +17,18 @@ def parse_wasm_filename(filename):
     name, version = base.rsplit("@", 1)
     return name, version
 
-def run_publish(file_path, wasm_name, wasm_version, source_account):
+def run_publish(file_path, wasm_name, wasm_version, source_account, registry_id):
     print(f"  Publishing {wasm_name}@{wasm_version}...")
     cmd = [
-        "stellar", "registry", "publish",
-        "--wasm", file_path,
+        "stellar", "contract", "invoke",
+        "--id", registry_id,
+        "--source-account", source_account,
+        "--",
+        "publish",
+        "--author", source_account,
+        "--wasm-file-path", file_path,
         "--wasm-name", wasm_name,
-        "--binver", wasm_version,
-        "--source-account", source_account
+        "--version", wasm_version,
     ]
     
     try:
@@ -40,8 +45,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "utility to restore registry wasms after testnet reset. "
-            "Pass --target-directory with directory created by save_wasms.py and optionally "
-            "use env variable 'STELLAR_REGISTRY_CONTRACT_ID' to override registry contract id"
+            "Pass --target-directory with directory created by save_wasms.py and "
+            "--registry-id for the registry contract id"
         )
     )
     
@@ -57,21 +62,24 @@ def main():
         required=True
     )
 
+    parser.add_argument(
+        "--registry-id",
+        help="Registry contract ID",
+        required=True
+    )
+
     args = parser.parse_args()
     target_dir = args.target_directory
     source_account = args.source_account
+    registry_id = args.registry_id
 
     if not os.path.isdir(target_dir):
         print(f"Error: {target_dir} is not a directory.")
         sys.exit(1)
 
-    # Check for Registry Contract ID override from environment
-    registry_id = os.environ.get("STELLAR_REGISTRY_CONTRACT_ID", None)
-    if registry_id:
-        print(f"Using Registry Contract ID from env: {registry_id}")
-    
     print(f"Target directory set to: {target_dir}")
     print(f"Source account set to: {source_account}")
+    print(f"Registry Contract ID set to: {registry_id}")
 
     # 1. Process root directory WASMs (Main Channel)
     print("\nProcessing root directory WASMs...")
@@ -80,26 +88,9 @@ def main():
         name, version = parse_wasm_filename(filename)
         if name and version:
             file_path = os.path.join(target_dir, filename)
-            run_publish(file_path, name, version, source_account)
+            run_publish(file_path, name, version, source_account, registry_id)
         else:
             print(f"  Skipping invalid filename: {filename}")
-
-    # 2. Process 'unverified' directory WASMs (Unverified Channel)
-    unverified_dir = os.path.join(target_dir, "unverified")
-    if os.path.isdir(unverified_dir):
-        print("\nProcessing 'unverified' directory WASMs...")
-        unverified_files = [f for f in os.listdir(unverified_dir) if f.endswith(".wasm") and os.path.isfile(os.path.join(unverified_dir, f))]
-        for filename in sorted(unverified_files):
-            name, version = parse_wasm_filename(filename)
-            if name and version:
-                file_path = os.path.join(unverified_dir, filename)
-                # Ensure the name is prepended with 'unverified/'
-                full_name = f"unverified/{name}"
-                run_publish(file_path, full_name, version, source_account)
-            else:
-                print(f"  Skipping invalid filename: {filename}")
-    else:
-        print("\n'unverified' directory not found, skipping.")
 
 if __name__ == "__main__":
     main()
