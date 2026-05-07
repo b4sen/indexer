@@ -1,0 +1,149 @@
+name: contract-lifecycle-testnet
+resource_size: s
+use_dedicated_ip: false
+job: false
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCES
+#
+# stellar_testnet.ledger_entries carries every ledger-entry state change.
+# We use it to detect:
+#   - wasm uploads      → ContractCode entries with change_type=created
+#   - contract deploys  → ContractData entries with change_type=created
+#                         AND key = LedgerKeyContractInstance
+#
+# This source captures both top-level CreateContract operations AND
+# factory-pattern deploys (a contract calling create_contract via
+# sub-invocation), which the stellar_testnet.operations dataset misses
+# because sub-invocation creates don't appear as top-level operations.
+#
+# stellar_testnet.events carries system events. We consume only the
+# `executable_update` event for upgrade tracking. The Soroban host does
+# not emit any event on initial deploy, so deploys come exclusively from
+# the ledger_entries source above.
+# ─────────────────────────────────────────────────────────────────────────────
+sources:
+    stellar_ledger_entries:
+        type: dataset
+        dataset_name: stellar_testnet.ledger_entries
+        version: 1.2.0
+        start_at: 2200000
+
+    stellar_events:
+        type: dataset
+        dataset_name: stellar_testnet.events
+        version: 1.2.0
+        start_at: 2200000
+
+transforms:
+    # Wasm upload metadata. ContractCode entries are keyed by their
+    # sha256 hash (the same value used everywhere else as wasm_hash),
+    # already serialized as lowercase hex. The bytecode itself goes to
+    # wasm_binaries — keeping it out of this row keeps per-upload
+    # lookups cheap.
+    wasm_uploads:
+        type: sql
+        primary_key: id
+        sql: |-
+            SELECT
+              id,
+              last_modified_ledger_sequence AS ledger_sequence,
+              ledger_closed_at AS closed_at,
+              transaction_hash,
+              JSON_VALUE(entry_data, '$.contract_code.hash') AS wasm_hash
+            FROM stellar_ledger_entries
+            WHERE ledger_entry_type = 'contract_code'
+              AND change_type = 'created'
+
+    # Wasm bytecode keyed by content hash. Same hash semantics as
+    # wasm_uploads — re-uploads collapse into a single row by upserting
+    # on wasm_hash. `wasm` is hex-encoded bytes.
+    wasm_binaries:
+        type: sql
+        primary_key: wasm_hash
+        sql: |-
+            SELECT
+              JSON_VALUE(entry_data, '$.contract_code.hash') AS wasm_hash,
+              JSON_VALUE(entry_data, '$.contract_code.code') AS wasm,
+              last_modified_ledger_sequence AS ledger_sequence,
+              ledger_closed_at AS closed_at
+            FROM stellar_ledger_entries
+            WHERE ledger_entry_type = 'contract_code'
+              AND change_type = 'created'
+
+    # Contract deploys captured at the ledger-entry level rather than
+    # from the operations stream. This catches both top-level
+    # CreateContract operations and factory-pattern sub-invocations.
+    #
+    # `contract_id` is the new contract's address in StrKey ("C…") form,
+    # taken directly from the entry's ScAddress (which serializes via
+    # StrKey, not hex). It matches archive.upgrades.upgraded_contract_id
+    # and v1.registered_contracts.contract_id one-to-one with no
+    # encoding bridge needed.
+    #
+    # `wasm_hash` is the contract's initial executable. NULL for SAC
+    # deploys, where the executable variant is `stellar_asset`.
+    contract_deploys:
+        type: sql
+        primary_key: id
+        sql: |-
+            SELECT
+              id,
+              last_modified_ledger_sequence AS ledger_sequence,
+              ledger_closed_at AS closed_at,
+              transaction_hash,
+              JSON_VALUE(entry_data, '$.contract_data.contract') AS contract_id,
+              JSON_VALUE(entry_data, '$.contract_data.val.contract_instance.executable.wasm') AS wasm_hash
+            FROM stellar_ledger_entries
+            WHERE ledger_entry_type = 'contract_data'
+              AND change_type = 'created'
+              AND JSON_VALUE(entry_data, '$.contract_data.key') = 'ledger_key_contract_instance'
+
+    upgrade_events:
+        type: sql
+        primary_key: id
+        sql: |-
+            SELECT
+              id,
+              transaction_hash,
+              ledger_sequence,
+              ledger_closed_at AS created_at,
+              contract_id AS upgraded_contract_id,
+              JSON_VALUE(topics, '$[1].vec[0].symbol') AS old_executable_kind,
+              JSON_VALUE(topics, '$[1].vec[1].bytes') AS old_wasm_hash,
+              JSON_VALUE(topics, '$[2].vec[0].symbol') AS new_executable_kind,
+              JSON_VALUE(topics, '$[2].vec[1].bytes') AS new_wasm_hash
+            FROM stellar_events
+            WHERE `type` = 'system'
+              AND in_successful_contract_call = true
+              AND transaction_successful = true
+              AND id NOT LIKE '%-op-none-%'
+              AND JSON_VALUE(topics, '$[0].symbol') = 'executable_update'
+
+sinks:
+    uploads_pg:
+        from: wasm_uploads
+        schema: archive
+        secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+        table: uploads
+        type: postgres
+
+    wasm_binaries_pg:
+        from: wasm_binaries
+        schema: archive
+        secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+        table: wasm_binaries
+        type: postgres
+
+    deploys_pg:
+        from: contract_deploys
+        schema: archive
+        secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+        table: deploys
+        type: postgres
+
+    upgrades_pg:
+        from: upgrade_events
+        schema: archive
+        secret_name: HOSTED_POSTGRES_CMJD1KI8O0
+        table: upgrades
+        type: postgres
