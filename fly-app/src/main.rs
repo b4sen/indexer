@@ -1,11 +1,11 @@
-use actix_web::{web, App, HttpMessage, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{web, App, HttpResponse, HttpServer};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool};
 use stellar_xdr::curr::{ScMetaEntry, ScMetaV0};
-use tracing_actix_web::TracingLogger;
+use tracing_actix_web::{RequestId, TracingLogger};
 
-use crate::tracing::{init_tracing, RequestID, RootSpan};
+use crate::tracing::{init_tracing, RootSpan};
 mod tracing;
 
 #[derive(Deserialize)]
@@ -203,25 +203,11 @@ struct InternalErrorResponse {
     request_id: Option<String>,
 }
 
-fn request_id_from_http_request(req: &HttpRequest) -> Option<String> {
-    req.extensions().get::<RequestID>().map(|id| id.0.clone())
-}
-
 fn internal_server_error_response(request_id: Option<&str>) -> HttpResponse {
     HttpResponse::InternalServerError().json(InternalErrorResponse {
         error: "Internal server error".into(),
         request_id: request_id.map(str::to_string),
     })
-}
-
-async fn request_id_middleware(
-    req: actix_web::dev::ServiceRequest,
-    next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
-) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, actix_web::Error> {
-    let request_id = uuid::Uuid::new_v4().to_string();
-
-    req.extensions_mut().insert(RequestID(request_id));
-    next.call(req).await
 }
 
 fn log_db_error(operation: &'static str, error: &sqlx::Error, pool: &PgPool) {
@@ -238,7 +224,7 @@ fn log_db_error(operation: &'static str, error: &sqlx::Error, pool: &PgPool) {
 async fn get_wasms(
     pool: web::Data<PgPool>,
     query: web::Query<QueryParams>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let limit = query.limit.unwrap_or(200);
     if limit < 1 || limit > 200 {
@@ -276,9 +262,9 @@ async fn get_wasms(
             HttpResponse::Ok().json(ListResponse { result: rows, next })
         }
         Err(e) => {
-            let request_id = request_id_from_http_request(&req);
             log_db_error("get_wasms.fetch_latest_published_wasms", &e, pool.get_ref());
-            internal_server_error_response(request_id.as_deref())
+            let request_id = request_id.to_string();
+            internal_server_error_response(Some(request_id.as_str()))
         }
     }
 }
@@ -431,16 +417,16 @@ async fn fetch_wasm_detail(
 async fn get_wasm_root_channel(
     pool: web::Data<PgPool>,
     path: web::Path<String>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let wasm_name = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
+    let request_id = request_id.to_string();
     fetch_wasm_detail(
         pool.get_ref(),
         "root",
         &wasm_name,
         None,
-        request_id.as_deref(),
+        Some(request_id.as_str()),
     )
     .await
 }
@@ -448,16 +434,16 @@ async fn get_wasm_root_channel(
 async fn get_wasm_latest(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let (channel, wasm_name) = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
+    let request_id = request_id.to_string();
     fetch_wasm_detail(
         pool.get_ref(),
         &channel,
         &wasm_name,
         None,
-        request_id.as_deref(),
+        Some(request_id.as_str()),
     )
     .await
 }
@@ -465,16 +451,16 @@ async fn get_wasm_latest(
 async fn get_wasm_version_root(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let (wasm_name, version) = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
+    let request_id = request_id.to_string();
     fetch_wasm_detail(
         pool.get_ref(),
         "root",
         &wasm_name,
         Some(&version),
-        request_id.as_deref(),
+        Some(request_id.as_str()),
     )
     .await
 }
@@ -482,16 +468,16 @@ async fn get_wasm_version_root(
 async fn get_wasm_version(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String, String)>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let (channel, wasm_name, version) = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
+    let request_id = request_id.to_string();
     fetch_wasm_detail(
         pool.get_ref(),
         &channel,
         &wasm_name,
         Some(&version),
-        request_id.as_deref(),
+        Some(request_id.as_str()),
     )
     .await
 }
@@ -499,7 +485,7 @@ async fn get_wasm_version(
 async fn get_contracts_root(
     pool: web::Data<PgPool>,
     query: web::Query<QueryParams>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let limit = query.limit.unwrap_or(200);
     if limit < 1 || limit > 200 {
@@ -538,9 +524,9 @@ async fn get_contracts_root(
             HttpResponse::Ok().json(ListResponse { result: rows, next })
         }
         Err(e) => {
-            let request_id = request_id_from_http_request(&req);
             log_db_error("get_contracts_root.fetch_contracts", &e, pool.get_ref());
-            internal_server_error_response(request_id.as_deref())
+            let request_id = request_id.to_string();
+            internal_server_error_response(Some(request_id.as_str()))
         }
     }
 }
@@ -548,22 +534,22 @@ async fn get_contracts_root(
 async fn get_single_contract_root(
     pool: web::Data<PgPool>,
     path: web::Path<String>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let contract_name = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
+    let request_id = request_id.to_string();
 
-    fetch_single_contract("root", &contract_name, pool, request_id.as_deref()).await
+    fetch_single_contract("root", &contract_name, pool, Some(request_id.as_str())).await
 }
 
 async fn get_single_contract(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let (channel, contract_name) = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
-    fetch_single_contract(&channel, &contract_name, pool, request_id.as_deref()).await
+    let request_id = request_id.to_string();
+    fetch_single_contract(&channel, &contract_name, pool, Some(request_id.as_str())).await
 }
 
 async fn fetch_single_contract(
@@ -644,11 +630,11 @@ async fn fetch_versions_for_contract_id(
 async fn get_contract_deploy_detail(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
-    req: HttpRequest,
+    request_id: RequestId,
 ) -> HttpResponse {
     let (channel, contract_name) = path.into_inner();
-    let request_id = request_id_from_http_request(&req);
-    fetch_single_contract_detail(&channel, &contract_name, pool, request_id.as_deref()).await
+    let request_id = request_id.to_string();
+    fetch_single_contract_detail(&channel, &contract_name, pool, Some(request_id.as_str())).await
 }
 
 async fn fetch_single_contract_detail(
@@ -764,7 +750,7 @@ async fn index_v1() -> HttpResponse {
     }))
 }
 
-async fn get_registries(pool: web::Data<PgPool>, req: HttpRequest) -> HttpResponse {
+async fn get_registries(pool: web::Data<PgPool>, request_id: RequestId) -> HttpResponse {
     let rows = sqlx::query_as::<_, Registry>(
         "SELECT contract_id, registry_channel as channel, ledger_sequence, created_at \
          FROM registries \
@@ -779,9 +765,9 @@ async fn get_registries(pool: web::Data<PgPool>, req: HttpRequest) -> HttpRespon
             next: None,
         }),
         Err(e) => {
-            let request_id = request_id_from_http_request(&req);
             log_db_error("get_registries.fetch_registries", &e, pool.get_ref());
-            internal_server_error_response(request_id.as_deref())
+            let request_id = request_id.to_string();
+            internal_server_error_response(Some(request_id.as_str()))
         }
     }
 }
@@ -823,7 +809,6 @@ async fn main() -> std::io::Result<()> {
         let tracing_middleware = TracingLogger::<RootSpan>::new();
         App::new()
             .wrap(tracing_middleware)
-            .wrap(actix_web::middleware::from_fn(request_id_middleware))
             .app_data(web::Data::new(pool.clone()))
             .route("/", web::get().to(index))
             .route("/v1", web::get().to(index_v1))

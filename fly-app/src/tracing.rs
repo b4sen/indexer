@@ -1,10 +1,7 @@
 use actix_web::HttpMessage;
-use tracing_actix_web::{DefaultRootSpanBuilder, RootSpanBuilder};
+use tracing_actix_web::{DefaultRootSpanBuilder, RequestId, RootSpanBuilder};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
-
-#[derive(Clone)]
-pub struct RequestID(pub String);
 
 pub struct RootSpan;
 
@@ -12,8 +9,8 @@ impl RootSpanBuilder for RootSpan {
     fn on_request_start(request: &actix_web::dev::ServiceRequest) -> ::tracing::Span {
         let req_id = request
             .extensions()
-            .get::<RequestID>()
-            .map(|request_id| request_id.0.clone())
+            .get::<RequestId>()
+            .map(|request_id| request_id.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         tracing_actix_web::root_span!(request, req_id = %req_id)
