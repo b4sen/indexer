@@ -1,28 +1,4 @@
-use actix_web::HttpMessage;
-use tracing_actix_web::{DefaultRootSpanBuilder, RequestId, RootSpanBuilder};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use uuid::Uuid;
-
-pub struct RootSpan;
-
-impl RootSpanBuilder for RootSpan {
-    fn on_request_start(request: &actix_web::dev::ServiceRequest) -> ::tracing::Span {
-        let req_id = request
-            .extensions()
-            .get::<RequestId>()
-            .map(|request_id| request_id.to_string())
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-
-        tracing_actix_web::root_span!(request, req_id = %req_id)
-    }
-
-    fn on_request_end<B: actix_web::body::MessageBody>(
-        span: ::tracing::Span,
-        outcome: &Result<actix_web::dev::ServiceResponse<B>, actix_web::Error>,
-    ) {
-        DefaultRootSpanBuilder::on_request_end(span, outcome);
-    }
-}
 
 pub fn init_tracing() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
