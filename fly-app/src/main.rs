@@ -1,11 +1,11 @@
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::{web, App, HttpMessage, HttpRequest, HttpResponse, HttpServer};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool};
 use stellar_xdr::curr::{ScMetaEntry, ScMetaV0};
 use tracing_actix_web::TracingLogger;
 
-use crate::tracing::{init_tracing, RootSpan};
+use crate::tracing::{init_tracing, RequestID, RootSpan};
 mod tracing;
 
 #[derive(Deserialize)]
@@ -196,7 +196,56 @@ struct ErrorResponse {
     error: String,
 }
 
-async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> HttpResponse {
+#[derive(Serialize)]
+struct InternalErrorResponse {
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+}
+
+fn request_id_from_http_request(req: &HttpRequest) -> Option<String> {
+    req.extensions().get::<RequestID>().map(|id| id.0.clone())
+}
+
+fn internal_server_error_response(request_id: Option<&str>) -> HttpResponse {
+    HttpResponse::InternalServerError().json(InternalErrorResponse {
+        error: "Internal server error".into(),
+        request_id: request_id.map(str::to_string),
+    })
+}
+
+async fn request_id_middleware(
+    req: actix_web::dev::ServiceRequest,
+    next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
+) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, actix_web::Error> {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    req.extensions_mut().insert(RequestID(request_id));
+    next.call(req).await
+}
+
+fn log_db_error(operation: &'static str, error: &sqlx::Error, pool: &PgPool) {
+    ::tracing::error!(
+        operation,
+        error = %error,
+        error_debug = ?error,
+        pool_size = pool.size(),
+        pool_idle = pool.num_idle(),
+        "database query failed"
+    );
+}
+
+async fn get_wasms(
+    pool: web::Data<PgPool>,
+    query: web::Query<QueryParams>,
+    req: HttpRequest,
+) -> HttpResponse {
     let limit = query.limit.unwrap_or(200);
     if limit < 1 || limit > 200 {
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -233,14 +282,9 @@ async fn get_wasms(pool: web::Data<PgPool>, query: web::Query<QueryParams>) -> H
             HttpResponse::Ok().json(ListResponse { result: rows, next })
         }
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "get_wasms",
-                "database query failed"
-            );
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            })
+            let request_id = request_id_from_http_request(&req);
+            log_db_error("get_wasms.fetch_latest_published_wasms", &e, pool.get_ref());
+            internal_server_error_response(request_id.as_deref())
         }
     }
 }
@@ -270,28 +314,34 @@ async fn fetch_wasm_meta(pool: &PgPool, wasm_hash: &str) -> Option<WasmMeta> {
                         match serde_json::from_value::<WasmMeta>(serde_json::Value::Object(obj)) {
                             Ok(m) => m,
                             Err(e) => {
-                                eprintln!("Failed to deserialize wasm meta: {e}");
+                                ::tracing::warn!(
+                                    wasm_hash,
+                                    error = %e,
+                                    error_debug = ?e,
+                                    "failed to deserialize wasm metadata"
+                                );
                                 return None;
                             }
                         };
                     return Some(wasm_meta);
                 }
                 Err(e) => {
-                    eprintln!("Failed to read wasm: {e}");
+                    ::tracing::warn!(
+                        wasm_hash,
+                        error = %e,
+                        error_debug = ?e,
+                        "failed to read wasm metadata"
+                    );
                     return None;
                 }
             }
         }
         Ok(None) => {
-            eprintln!("No wasm binary for hash: {wasm_hash}");
+            ::tracing::warn!(wasm_hash, "no wasm binary found");
             return None;
         }
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "fetch_wasm_meta",
-                "database query failed"
-            );
+            log_db_error("fetch_wasm_meta.select_wasm_binary", &e, pool);
             return None;
         }
     }
@@ -302,6 +352,7 @@ async fn fetch_wasm_detail(
     channel: &str,
     wasm_name: &str,
     version: Option<&str>,
+    request_id: Option<&str>,
 ) -> HttpResponse {
     let row = if let Some(ver) = version {
         sqlx::query_as::<_, WasmDetailRow>(
@@ -347,7 +398,12 @@ async fn fetch_wasm_detail(
             let wasm_meta = if let Some(wasm_hash) = detail_row.wasm_hash.as_deref() {
                 fetch_wasm_meta(pool, wasm_hash).await
             } else {
-                eprintln!("Missing wasm_hash for wasm_name='{wasm_name}'");
+                ::tracing::warn!(
+                    wasm_name,
+                    channel,
+                    version = ?version,
+                    "missing wasm_hash; returning wasm detail without metadata"
+                );
                 None
             };
 
@@ -358,14 +414,8 @@ async fn fetch_wasm_detail(
                     meta: wasm_meta,
                 }),
                 Err(e) => {
-                    ::tracing::error!(
-                        error = %e,
-                        operation = "fetch_wasm_detail.response",
-                        "database query failed"
-                    );
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Internal server error".into(),
-                    })
+                    log_db_error("fetch_wasm_detail.select_wasm_versions", &e, pool);
+                    internal_server_error_response(request_id)
                 }
             }
         }
@@ -378,50 +428,84 @@ async fn fetch_wasm_detail(
             HttpResponse::NotFound().json(ErrorResponse { error: msg })
         }
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "fetch_wasm_detail.detail_row",
-                "database query failed"
-            );
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            })
+            log_db_error("fetch_wasm_detail.select_wasm_detail", &e, pool);
+            internal_server_error_response(request_id)
         }
     }
 }
 
-async fn get_wasm_root_channel(pool: web::Data<PgPool>, path: web::Path<String>) -> HttpResponse {
+async fn get_wasm_root_channel(
+    pool: web::Data<PgPool>,
+    path: web::Path<String>,
+    req: HttpRequest,
+) -> HttpResponse {
     let wasm_name = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), "root", &wasm_name, None).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_wasm_detail(
+        pool.get_ref(),
+        "root",
+        &wasm_name,
+        None,
+        request_id.as_deref(),
+    )
+    .await
 }
 
 async fn get_wasm_latest(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (channel, wasm_name) = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), &channel, &wasm_name, None).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_wasm_detail(
+        pool.get_ref(),
+        &channel,
+        &wasm_name,
+        None,
+        request_id.as_deref(),
+    )
+    .await
 }
 
 async fn get_wasm_version_root(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (wasm_name, version) = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), "root", &wasm_name, Some(&version)).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_wasm_detail(
+        pool.get_ref(),
+        "root",
+        &wasm_name,
+        Some(&version),
+        request_id.as_deref(),
+    )
+    .await
 }
 
 async fn get_wasm_version(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String, String)>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (channel, wasm_name, version) = path.into_inner();
-    fetch_wasm_detail(pool.get_ref(), &channel, &wasm_name, Some(&version)).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_wasm_detail(
+        pool.get_ref(),
+        &channel,
+        &wasm_name,
+        Some(&version),
+        request_id.as_deref(),
+    )
+    .await
 }
 
 async fn get_contracts_root(
     pool: web::Data<PgPool>,
     query: web::Query<QueryParams>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let limit = query.limit.unwrap_or(200);
     if limit < 1 || limit > 200 {
@@ -460,14 +544,9 @@ async fn get_contracts_root(
             HttpResponse::Ok().json(ListResponse { result: rows, next })
         }
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "get_contracts_root",
-                "database query failed"
-            );
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            })
+            let request_id = request_id_from_http_request(&req);
+            log_db_error("get_contracts_root.fetch_contracts", &e, pool.get_ref());
+            internal_server_error_response(request_id.as_deref())
         }
     }
 }
@@ -475,24 +554,29 @@ async fn get_contracts_root(
 async fn get_single_contract_root(
     pool: web::Data<PgPool>,
     path: web::Path<String>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let contract_name = path.into_inner();
+    let request_id = request_id_from_http_request(&req);
 
-    fetch_single_contract("root", &contract_name, pool).await
+    fetch_single_contract("root", &contract_name, pool, request_id.as_deref()).await
 }
 
 async fn get_single_contract(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (channel, contract_name) = path.into_inner();
-    fetch_single_contract(&channel, &contract_name, pool).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_single_contract(&channel, &contract_name, pool, request_id.as_deref()).await
 }
 
 async fn fetch_single_contract(
     channel: &str,
     contract_name: &str,
     pool: web::Data<PgPool>,
+    request_id: Option<&str>,
 ) -> HttpResponse {
     let row = sqlx::query_as::<_, ContractDetail>(
         "SELECT id, transaction_hash, ledger_sequence, created_at, \
@@ -516,14 +600,12 @@ async fn fetch_single_contract(
             });
         }
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "fetch_single_contract",
-                "database query failed"
+            log_db_error(
+                "fetch_single_contract.select_contract_detail",
+                &e,
+                pool.get_ref(),
             );
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            });
+            return internal_server_error_response(request_id);
         }
     };
 
@@ -537,14 +619,12 @@ async fn fetch_single_contract(
     let versions = match fetch_versions_for_contract_id(&contract_id, pool.get_ref()).await {
         Ok(rows) => rows,
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "fetch_single_contract.versions",
-                "database query failed"
+            log_db_error(
+                "fetch_single_contract.select_contract_versions",
+                &e,
+                pool.get_ref(),
             );
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            });
+            return internal_server_error_response(request_id);
         }
     };
 
@@ -570,15 +650,18 @@ async fn fetch_versions_for_contract_id(
 async fn get_contract_deploy_detail(
     pool: web::Data<PgPool>,
     path: web::Path<(String, String)>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (channel, contract_name) = path.into_inner();
-    fetch_single_contract_detail(&channel, &contract_name, pool).await
+    let request_id = request_id_from_http_request(&req);
+    fetch_single_contract_detail(&channel, &contract_name, pool, request_id.as_deref()).await
 }
 
 async fn fetch_single_contract_detail(
     channel: &str,
     contract_name: &str,
     pool: web::Data<PgPool>,
+    request_id: Option<&str>,
 ) -> HttpResponse {
     let row = sqlx::query_as::<_, ContractDeployDetail>(
         "SELECT
@@ -619,14 +702,12 @@ async fn fetch_single_contract_detail(
             error: format!("Contract '{contract_name}' not found"),
         }),
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "fetch_single_contract_detail",
-                "database query failed"
+            log_db_error(
+                "fetch_single_contract_detail.select_contract_deploy_detail",
+                &e,
+                pool.get_ref(),
             );
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            })
+            internal_server_error_response(request_id)
         }
     }
 }
@@ -689,7 +770,7 @@ async fn index_v1() -> HttpResponse {
     }))
 }
 
-async fn get_registries(pool: web::Data<PgPool>) -> HttpResponse {
+async fn get_registries(pool: web::Data<PgPool>, req: HttpRequest) -> HttpResponse {
     let rows = sqlx::query_as::<_, Registry>(
         "SELECT contract_id, registry_channel as channel, ledger_sequence, created_at \
          FROM registries \
@@ -704,14 +785,9 @@ async fn get_registries(pool: web::Data<PgPool>) -> HttpResponse {
             next: None,
         }),
         Err(e) => {
-            ::tracing::error!(
-                error = %e,
-                operation = "get_registries",
-                "database query failed"
-            );
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".into(),
-            })
+            let request_id = request_id_from_http_request(&req);
+            log_db_error("get_registries.fetch_registries", &e, pool.get_ref());
+            internal_server_error_response(request_id.as_deref())
         }
     }
 }
@@ -742,10 +818,18 @@ async fn main() -> std::io::Result<()> {
 
     init_tracing();
 
+    ::tracing::info!(
+        port,
+        pool_size = pool.size(),
+        pool_idle = pool.num_idle(),
+        "starting server"
+    );
+
     HttpServer::new(move || {
         let tracing_middleware = TracingLogger::<RootSpan>::new();
         App::new()
             .wrap(tracing_middleware)
+            .wrap(actix_web::middleware::from_fn(request_id_middleware))
             .app_data(web::Data::new(pool.clone()))
             .route("/", web::get().to(index))
             .route("/v1", web::get().to(index_v1))
