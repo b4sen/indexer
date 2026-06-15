@@ -218,13 +218,7 @@ async fn request_id_middleware(
     req: actix_web::dev::ServiceRequest,
     next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
 ) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, actix_web::Error> {
-    let request_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let request_id = uuid::Uuid::new_v4().to_string();
 
     req.extensions_mut().insert(RequestID(request_id));
     next.call(req).await
