@@ -632,7 +632,7 @@ async fn fetch_single_contract_detail(
                 FROM v1.deployed_contracts
                 ORDER BY contract_id, ledger_sequence DESC
             ) deployed ON deployed.contract_id = registered.contract_id
-            LEFT JOIN raw_events_backup raw_event
+            LEFT JOIN v1.raw_events_backup raw_event
               ON deployed.transaction_hash = raw_event.contract_id
             WHERE registered.contract_name = $1
               AND registered.channel = $2
