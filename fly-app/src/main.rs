@@ -1,7 +1,7 @@
 use actix_web::{web, App, HttpResponse, HttpServer};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool};
+use sqlx::PgPool;
 use stellar_xdr::curr::{ScMetaEntry, ScMetaV0};
 use tracing_actix_web::{DefaultRootSpanBuilder, RequestId, TracingLogger};
 
@@ -240,7 +240,7 @@ async fn get_wasms(
 
     let rows = sqlx::query_as::<_, WasmResult>(
         "SELECT id, author, wasm_version, wasm_name, wasm_hash, channel \
-         FROM latest_published_wasms \
+         FROM v1.latest_published_wasms \
          WHERE (ledger_sequence, id) >= ($1, $2) \
          ORDER BY ledger_sequence, id ASC \
          LIMIT $3",
@@ -336,7 +336,7 @@ async fn fetch_wasm_detail(
         sqlx::query_as::<_, WasmDetailRow>(
             "SELECT id, transaction_hash, ledger_sequence, created_at, \
                     author, wasm_version, wasm_name, wasm_hash, channel \
-             FROM published_wasms_with_channel \
+             FROM v1.published_wasms_with_channel \
              WHERE wasm_name = $1 AND wasm_version = $2 \
                AND channel = $3",
         )
@@ -349,7 +349,7 @@ async fn fetch_wasm_detail(
         sqlx::query_as::<_, WasmDetailRow>(
             "SELECT id, transaction_hash, ledger_sequence, created_at, \
                     author, wasm_version, wasm_name, wasm_hash, channel \
-             FROM latest_published_wasms \
+             FROM v1.latest_published_wasms \
              WHERE wasm_name = $1 AND channel = $2",
         )
         .bind(wasm_name)
@@ -363,7 +363,7 @@ async fn fetch_wasm_detail(
         Ok(Some(detail_row)) => {
             let versions = sqlx::query_as::<_, WasmVersionResult>(
                 "SELECT author, wasm_version, wasm_name, wasm_hash, channel \
-                 FROM published_wasms_with_channel \
+                 FROM v1.published_wasms_with_channel \
                  WHERE wasm_name = $1 \
                    AND channel = $2 \
                  ORDER BY ledger_sequence DESC, wasm_version DESC",
@@ -483,7 +483,7 @@ async fn get_contracts_root(
     let rows = sqlx::query_as::<_, ContractResult>(
         "SELECT id, contract_id, channel, contract_name, sac, deployer, \
                 wasm_version, wasm_name, wasm_channel \
-         FROM contracts_enriched \
+         FROM v1.contracts_enriched \
          WHERE (ledger_sequence, id) >= ($1, $2) \
          ORDER BY ledger_sequence, id ASC \
          LIMIT $3",
@@ -539,7 +539,7 @@ async fn fetch_single_contract(
         "SELECT id, transaction_hash, ledger_sequence, created_at, \
                 contract_id, contract_name, channel, sac, \
                 deployer, wasm_version, wasm_name, wasm_channel \
-         FROM contracts_enriched \
+         FROM v1.contracts_enriched \
          WHERE contract_name = $1 AND channel = $2 \
          ORDER BY ledger_sequence DESC \
          LIMIT 1",
@@ -595,7 +595,7 @@ async fn fetch_versions_for_contract_id(
     sqlx::query_as::<_, ContractVersion>(
         "SELECT version_index, kind, wasm_hash, wasm_name, wasm_version, wasm_channel, \
                 transaction_hash, ledger_sequence, created_at \
-         FROM versions \
+         FROM v1.versions \
          WHERE contract_id = $1 \
          ORDER BY version_index ASC",
     )
@@ -626,13 +626,13 @@ async fn fetch_single_contract_detail(
                 registered.channel,
                 deployed.deployer,
                 raw_event.operation_body
-            FROM registered_contracts_with_channel registered
+            FROM v1.registered_contracts_with_channel registered
             LEFT JOIN (
                 SELECT DISTINCT ON (contract_id) contract_id, deployer, transaction_hash
-                FROM deployed_contracts
+                FROM v1.deployed_contracts
                 ORDER BY contract_id, ledger_sequence DESC
             ) deployed ON deployed.contract_id = registered.contract_id
-            LEFT JOIN raw_events_backup raw_event
+            LEFT JOIN v1.raw_events_backup raw_event
               ON deployed.transaction_hash = raw_event.contract_id
             WHERE registered.contract_name = $1
               AND registered.channel = $2
@@ -729,7 +729,7 @@ async fn index_v1() -> HttpResponse {
 async fn get_registries(pool: web::Data<PgPool>, request_id: RequestId) -> HttpResponse {
     let rows = sqlx::query_as::<_, Registry>(
         "SELECT contract_id, registry_channel as channel, ledger_sequence, created_at \
-         FROM registries \
+         FROM v1.registries \
          ORDER BY channel ASC",
     )
     .fetch_all(pool.get_ref())
@@ -756,12 +756,6 @@ async fn main() -> std::io::Result<()> {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .after_connect(|conn, _meta| {
-            Box::pin(async move {
-                conn.execute("SET search_path TO v1").await?;
-                Ok(())
-            })
-        })
         .connect(&database_url)
         .await
         .expect("Failed to connect to database");
