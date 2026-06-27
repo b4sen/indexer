@@ -13,30 +13,11 @@
 
 SET search_path TO v1;
 
--- Add the tsvector column
-ALTER TABLE published_wasms
-  ADD COLUMN search_vector tsvector;
+-- extension is enabled on v1 schema
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- Populate it from existing data
-UPDATE published_wasms
-SET search_vector = to_tsvector('english', coalesce(wasm_name, ''));
-
--- Create a GIN index for fast full-text search
-CREATE INDEX wasm_name_gin_idx ON published_wasms USING GIN (search_vector);
-
--- Auto-update the vector on insert/update via trigger
-CREATE FUNCTION published_wasms_search_vector_update() RETURNS trigger AS $$
-BEGIN
-  NEW.search_vector := to_tsvector('english',
-    coalesce(wasm_name, '')
-  );
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER published_wasms_search_vector_trigger
-BEFORE INSERT OR UPDATE ON published_wasms
-FOR EACH ROW EXECUTE FUNCTION published_wasms_search_vector_update();
+-- create trigram index on wasm_name
+CREATE INDEX wasm_name_trgm_idx_published_wasms ON published_wasms USING GIN (wasm_name gin_trgm_ops);
 
 -- Channel views: translate emitter_contract_id → friendly channel name
 -- via the registries table.
