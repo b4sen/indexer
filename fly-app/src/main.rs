@@ -259,7 +259,7 @@ async fn get_wasms(
                 OR author = $4 \
                 OR v1.similarity(channel, $4) > 0.2 ) \
                 ) \
-         ORDER BY ledger_sequence, id ASC, rank DESC \
+         ORDER BY rank DESC, ledger_sequence, id ASC \
          LIMIT $3",
     )
     .bind(ledger)
